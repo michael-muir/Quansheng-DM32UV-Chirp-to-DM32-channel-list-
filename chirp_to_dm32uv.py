@@ -6,8 +6,6 @@ output_file = "CHIRP_to_DM32UV_fixed.csv"
 
 # Default values for DM32UV fields
 default_values = {
-    "Power": "High",
-    "Band Width": "12.5KHz",
     "Scan List": "None",
     "TX Admit": "Allow TX",
     "Emergency System": "None",
@@ -54,10 +52,21 @@ column_order = [
     "PTT ID Display"
 ]
 
-# Read CHIRP CSV and process rows
+# Read CHIRP CSV and pre-process rows to determin radio power levels
+lowest = highest = 0
 with open(input_file, newline='', encoding='utf-8') as infile:
     reader = csv.DictReader(infile)
+
+    for i, row in enumerate(reader):
+        wattage = float(row.get("Power", "").strip("W"))
+        if i == 0: lowest = highest = wattage
+        if wattage < lowest: lowest = wattage
+        if wattage > highest: highest = wattage
+
+# Read CHIRP CSV and process rows
+with open(input_file, newline='', encoding='utf-8') as infile:
     output_rows = []
+    reader = csv.DictReader(infile)
 
     for i, row in enumerate(reader):
         if not row.get("Name") or not row.get("Frequency"):
@@ -78,22 +87,66 @@ with open(input_file, newline='', encoding='utf-8') as infile:
             print(f"Skipping row {i+1} due to error: {e}")
             continue
 
-        ctcss_decode = row.get("rToneFreq", "None") or "None"
+        ctcss_decode = "None"
+        ctcss_encode = "None"
+        tone_mode = row.get("Tone", "None") or "None"
+        
+        if tone_mode == "Tone":
+            ctcss_decode = row.get("rToneFreq", "None") or "None"
+        elif tone_mode == "TSQL":
+            ctcss_encode = row.get("cToneFreq", "None") or "None"
+            ctcss_decode = ctcss_encode
+        elif tone_mode == "Cross":
+            cross_mode = row.get("CrossMode", "None") or "None"
+            if cross_mode == "Tone->Tone":
+                ctcss_encode = row.get("cToneFreq", "None") or "None"
+                ctcss_decode = row.get("rToneFreq", "None") or "None"
+            elif cross_mode == "DTCS->":
+                ctcss_encode = "D%sN" % row.get("DtcsPolarity", "None") or "None"
+            elif cross_mode == "->DTCS":
+                ctcss_decode = "D%sN" % row.get("RxDtcsPolarity", "None") or "None"
+            elif cross_mode == "DTCS->Tone":
+                ctcss_encode = "D%sN" % row.get("DtcsPolarity", "None") or "None"
+                ctcss_decode = row.get("cToneFreq", "None") or "None"
+            elif cross_mode == "Tone->DTCS":
+                ctcss_encode = row.get("rToneFreq", "None") or "None"
+                ctcss_decode = "D%sN" % row.get("RxDtcsPolarity", "None") or "None"
+            elif cross_mode == "->Tone":
+                ctcss_decode = row.get("cToneFreq", "None") or "None"
+            elif cross_mode == "DTCS->DTCS":
+                ctcss_encode = "D%sN" % row.get("DtcsPolarity", "None") or "None"
+                ctcss_decode = "D%sN" % row.get("RxDtcsPolarity", "None") or "None"
+        elif tone_mode == "DTCS":
+            ctcss_encode = "D%sN" % row.get("DtcsPolarity", "None") or "None"
+            ctcss_decode = ctcss_encode
+
+
+
+        wattage = float(row.get("Power").strip("W"))
+        if highest == lowest or wattage == highest:
+            power = "High"
+        elif wattage == lowest:
+            power = "Low"
+        else:
+            power = "Middle"
 
         new_row = {
             "No.": i + 1,
             "Channel Name": row["Name"],
-            "Channel Type": "Anlaog" if row.get("Mode", "").lower() in ["fm", "nfm"] else "Digital",
+            "Channel Type": "Analog" if row.get("Mode", "").lower() in ["fm", "nfm", "am"] else "Digital",
             "RX Frequency[MHz]": str(rx),
             "TX Frequency[MHz]": str(tx),
-            "CTC/DCS Encode": "None",          # Force Encode to None
-            "CTC/DCS Decode": ctcss_decode     # Use rToneFreq from CHIRP
-        }
+            "CTC/DCS Encode": ctcss_encode,     # Use cToneFreq form CHIRP
+            "CTC/DCS Decode": ctcss_decode,     # Use rToneFreq from CHIRP
+            "Power": power, 
+            "Band Width": "25KHz" if row.get("Mode", "FM").lower() in ["fm"] else "12.5KHz"
+        } 
 
         new_row.update(default_values)
         output_rows.append(new_row)
 
         print(f"Processed: {new_row['Channel Name']} ({rx} MHz)")
+
 
 # Write output file
 with open(output_file, mode='w', newline='', encoding='utf-8') as outfile:
